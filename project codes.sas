@@ -1,95 +1,138 @@
-/* Filter data for Central Minnesota */
-proc sql noprint;
-	create table work.CENTRALMN as select * from _TEMP0.USA_00008 where(PUMA EQ 600 
-		OR PUMA EQ 900 OR PUMA EQ 1000 OR PUMA EQ 1800 OR PUMA EQ 1900);		
-		
-/* Remove missing values from the data set */		
-proc sql noprint;
-	create table work.removedna as select * from WORK.CENTRALMN where(EMPSTAT GE 1 
-		AND FOODSTMP GE 1 AND POVERTY GT 0 AND EDUC GE 1);
+/*--------------------------------------------------------------
+ 1. Select records for Central Minnesota
 
-/* Filter data for Poverty less than or equalt to 300 */
-proc sql noprint;
-	create table work.filter as select * from WORK.IMPORT1 where(POVERTY LE 300);
+ The PUMA codes below were used to identify the geographic
+ areas included in the analysis.
+--------------------------------------------------------------*/
 
-/* Creating dummy variables */
-data work.dummies_created;
-	set WORK.NAREMOVE;
+proc sql;
+    create table work.central_mn as
+    select *
+    from _TEMP0.USA_00008
+    where PUMA in (600, 900, 1000, 1800, 1900);
+quit;
 
-	select (HCOVANY);
-		when (1) AnyCoverage=0;
-		when (2) AnyCoverage=1;
-		otherwise AnyCoverage=HCOVANY;
-	end;
-	
-	select (MARST);
-		when (1) Single=0;
-		when (2) Single=0;
-		when (3) Single=0;
-		when (4) Single=0;
-		when (5) Single=0;
-		when (6) Single=1;
-		otherwise Single=MARST;
-	end;
-	
-	select (SEX);
-		when (1) Female=0;
-		when (2) Female=1;
-		otherwise Female=SEX;
-	end;
 
-	select (FOODSTMP);
-		when (1) SNAP=0;
-		when (2) SNAP=1;
-		otherwise SNAP=FOODSTMP;
-	end;
-	
-	select (EDUC);
-		when (0) HSD=1;
-		when (1) HSD=1;
-		when (2) HSD=1;
-		when (3) HSD=1;
-		when (4) HSD=1;
-		when (5) HSD=1;
-		when (6) HSD=0;
-		when (7) HSD=0;
-		when (8) HSD=0;
-		when (9) HSD=0;
-		when (10) HSD=0;
-		when (11) HSD=0;
-		otherwise HSD=EDUC;
-	end;
-	
-	select (EMPSTAT);
-		when (1) Employed=1;
-		when (2) Employed=0;
-		when (3) Employed=0;
-		otherwise Employed=EMPSTAT;
-	end;
-run;
+/*--------------------------------------------------------------
+ 2. Remove records with missing or invalid values
 
-/* Fequency tables of the variables */
-proc freq data = WORK.IMPORT;
-tables NCHILD Single SNAP HSD Poor Employed Female AnyCoverage PublicHealthCov /nocum;
-run;
+ Keep observations with valid values for employment status,
+ SNAP participation, poverty, and education.
+--------------------------------------------------------------*/
 
-/* Summary Statistics */
-proc means data=WORK.IMPORT chartype mean std min max n vardef=df;
-	var NCHILD AGE POVERTY AnyCoverage Single SNAP HSD Employed Female;
-	weight PERWT;
-run;
+proc sql;
+    create table work.cleaned_data as
+    select *
+    from work.central_mn
+    where EMPSTAT >= 1
+      and FOODSTMP >= 1
+      and POVERTY > 0
+      and EDUC >= 1;
+quit;
 
-proc means data=WORK.IMPORT chartype mean std min max n vardef=df;
-	var NCHILD AGE POVERTY AnyCoverage Single HSD Employed Female;
-	class SNAP;
-	weight PERWT;
+
+/*--------------------------------------------------------------
+ 3. Create analysis variables
+
+ Convert several categorical variables into indicator/dummy
+ variables that can be used in the analysis.
+--------------------------------------------------------------*/
+
+data work.analysis_data;
+    set work.cleaned_data;
+
+    /* Any health insurance coverage */
+    if HCOVANY = 1 then AnyCoverage = 0;
+    else if HCOVANY = 2 then AnyCoverage = 1;
+    else AnyCoverage = .;
+
+    /* Single */
+    if MARST = 6 then Single = 1;
+    else if 1 <= MARST <= 5 then Single = 0;
+    else Single = .;
+
+    /* Female */
+    if SEX = 1 then Female = 0;
+    else if SEX = 2 then Female = 1;
+    else Female = .;
+
+    /* SNAP participation */
+    if FOODSTMP = 1 then SNAP = 0;
+    else if FOODSTMP = 2 then SNAP = 1;
+    else SNAP = .;
+
+    /* High school education or less */
+    if 0 <= EDUC <= 5 then HSD = 1;
+    else if 6 <= EDUC <= 11 then HSD = 0;
+    else HSD = .;
+
+    /* Employment status */
+    if EMPSTAT = 1 then Employed = 1;
+    else if EMPSTAT in (2, 3) then Employed = 0;
+    else Employed = .;
 run;
 
 
-/* Linear Probability Model */
-proc reg data=WORK.IMPORT alpha=0.05 plots(only)=(diagnostics residuals 
-		observedbypredicted);
-	model AnyCoverage=NCHILD AGE POVERTY Single SNAP HSD Employed Female /;
-	weight PERWT;
-	run;
+/*--------------------------------------------------------------
+ 4. Review the frequency of key variables
+
+ PROC FREQ is used to check the distribution of categorical
+ variables before continuing with the analysis.
+--------------------------------------------------------------*/
+
+proc freq data=work.analysis_data;
+    tables NCHILD Single SNAP HSD Employed Female
+           AnyCoverage / nocum;
+run;
+
+
+/*--------------------------------------------------------------
+ 5. Calculate summary statistics
+
+ PERWT is the ACS person weight and is used because the ACS
+ is a survey sample.
+--------------------------------------------------------------*/
+
+proc means data=work.analysis_data
+           mean std min max n;
+    var NCHILD AGE POVERTY AnyCoverage Single
+        SNAP HSD Employed Female;
+    weight PERWT;
+run;
+
+
+/*--------------------------------------------------------------
+ 6. Compare summary statistics by SNAP participation
+--------------------------------------------------------------*/
+
+proc means data=work.analysis_data
+           mean std min max n;
+    class SNAP;
+    var NCHILD AGE POVERTY AnyCoverage Single
+        HSD Employed Female;
+    weight PERWT;
+run;
+
+
+/*--------------------------------------------------------------
+ 7. Run a linear probability model
+
+ The dependent variable is AnyCoverage.
+ The model examines its relationship with SNAP participation
+ and other demographic and socioeconomic variables.
+--------------------------------------------------------------*/
+
+proc reg data=work.analysis_data;
+    model AnyCoverage =
+          NCHILD
+          AGE
+          POVERTY
+          Single
+          SNAP
+          HSD
+          Employed
+          Female;
+
+    weight PERWT;
+run;
 quit;
