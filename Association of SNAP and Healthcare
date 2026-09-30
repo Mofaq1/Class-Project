@@ -1,0 +1,146 @@
+/*--------------------------------------------------------------
+ Project: Association of SNAP and Healthcare
+ Purpose: Examine the relationship between SNAP participation
+          and health insurance coverage in Central Minnesota.
+ Data: American Community Survey (ACS)
+--------------------------------------------------------------*/
+
+
+/*--------------------------------------------------------------
+ 1. Select records for Central Minnesota
+
+ The PUMA codes below were used to identify the geographic
+ areas included in the analysis.
+--------------------------------------------------------------*/
+
+proc sql;
+    create table work.central_mn as
+    select *
+    from _TEMP0.USA_00008
+    where PUMA in (600, 900, 1000, 1800, 1900);
+quit;
+
+
+/*--------------------------------------------------------------
+ 2. Remove records with missing or invalid values
+
+ Keep observations with valid values for employment status,
+ SNAP participation, poverty, and education.
+--------------------------------------------------------------*/
+
+proc sql;
+    create table work.cleaned_data as
+    select *
+    from work.central_mn
+    where EMPSTAT >= 1
+      and FOODSTMP >= 1
+      and POVERTY > 0
+      and EDUC >= 1;
+quit;
+
+
+/*--------------------------------------------------------------
+ 3. Create analysis variables
+
+ Convert several categorical variables into indicator/dummy
+ variables that can be used in the analysis.
+--------------------------------------------------------------*/
+
+data work.analysis_data;
+    set work.cleaned_data;
+
+    /* Any health insurance coverage */
+    if HCOVANY = 1 then AnyCoverage = 0;
+    else if HCOVANY = 2 then AnyCoverage = 1;
+    else AnyCoverage = .;
+
+    /* Single */
+    if MARST = 6 then Single = 1;
+    else if 1 <= MARST <= 5 then Single = 0;
+    else Single = .;
+
+    /* Female */
+    if SEX = 1 then Female = 0;
+    else if SEX = 2 then Female = 1;
+    else Female = .;
+
+    /* SNAP participation */
+    if FOODSTMP = 1 then SNAP = 0;
+    else if FOODSTMP = 2 then SNAP = 1;
+    else SNAP = .;
+
+    /* High school education or less */
+    if 0 <= EDUC <= 5 then HSD = 1;
+    else if 6 <= EDUC <= 11 then HSD = 0;
+    else HSD = .;
+
+    /* Employment status */
+    if EMPSTAT = 1 then Employed = 1;
+    else if EMPSTAT in (2, 3) then Employed = 0;
+    else Employed = .;
+run;
+
+
+/*--------------------------------------------------------------
+ 4. Review the frequency of key variables
+
+ PROC FREQ is used to check the distribution of categorical
+ variables before continuing with the analysis.
+--------------------------------------------------------------*/
+
+proc freq data=work.analysis_data;
+    tables NCHILD Single SNAP HSD Employed Female
+           AnyCoverage / nocum;
+run;
+
+
+/*--------------------------------------------------------------
+ 5. Calculate summary statistics
+
+ PERWT is the ACS person weight and is used because the ACS
+ is a survey sample.
+--------------------------------------------------------------*/
+
+proc means data=work.analysis_data
+           mean std min max n;
+    var NCHILD AGE POVERTY AnyCoverage Single
+        SNAP HSD Employed Female;
+    weight PERWT;
+run;
+
+
+/*--------------------------------------------------------------
+ 6. Compare summary statistics by SNAP participation
+--------------------------------------------------------------*/
+
+proc means data=work.analysis_data
+           mean std min max n;
+    class SNAP;
+    var NCHILD AGE POVERTY AnyCoverage Single
+        HSD Employed Female;
+    weight PERWT;
+run;
+
+
+/*--------------------------------------------------------------
+ 7. Run a linear probability model
+
+ The dependent variable is AnyCoverage.
+ The model examines its relationship with SNAP participation
+ and other demographic and socioeconomic variables.
+--------------------------------------------------------------*/
+
+proc reg data=work.analysis_data;
+    model AnyCoverage =
+          NCHILD
+          AGE
+          POVERTY
+          Single
+          SNAP
+          HSD
+          Employed
+          Female;
+
+    weight PERWT;
+run;
+quit;
